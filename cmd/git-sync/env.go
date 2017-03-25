@@ -3,8 +3,6 @@ package main
 import (
 	"os"
 	"strconv"
-
-	"github.com/prometheus/common/log"
 )
 
 func envString(key, def string) string {

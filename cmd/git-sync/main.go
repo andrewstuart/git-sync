@@ -28,7 +28,13 @@ import (
 	"github.com/thockin/logr"
 )
 
+var (
+	log     = newLoggerOrDie()
+	cliOpts = SyncOption{}
+)
+
 func main() {
+	setupFlags(&cliOpts)
 
 	// From here on, output goes through logging.
 	log.V(0).Infof("starting up: %q", os.Args)

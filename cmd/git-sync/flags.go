@@ -8,13 +8,7 @@ import (
 	"strings"
 )
 
-var (
-	log = newLoggerOrDie()
-
-	cliOpts = SyncOption{}
-)
-
-func init() {
+func setupFlags(cliOpts *SyncOption) {
 	flag.StringVar(&cliOpts.Repo, "repo", envString("GIT_SYNC_REPO", ""),
 		"the git repository to clone")
 	flag.StringVar(&cliOpts.Branch, "branch", envString("GIT_SYNC_BRANCH", "master"),
