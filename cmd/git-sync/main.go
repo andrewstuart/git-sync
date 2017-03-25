@@ -28,15 +28,6 @@ import (
 	"github.com/thockin/logr"
 )
 
-func newLoggerOrDie() logr.Logger {
-	g, err := glogr.New()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failind to initialize logging: %v\n", err)
-		os.Exit(1)
-	}
-	return g
-}
-
 func main() {
 
 	// From here on, output goes through logging.
@@ -75,6 +66,15 @@ func main() {
 		log.V(1).Infof("next sync in %v", waitTime(cliOpts.Wait))
 		time.Sleep(waitTime(cliOpts.Wait))
 	}
+}
+
+func newLoggerOrDie() logr.Logger {
+	g, err := glogr.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failind to initialize logging: %v\n", err)
+		os.Exit(1)
+	}
+	return g
 }
 
 func waitTime(seconds float64) time.Duration {
