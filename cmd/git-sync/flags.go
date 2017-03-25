@@ -8,24 +8,6 @@ import (
 	"strings"
 )
 
-// SyncOption contains the options available for gitSync to sync
-type SyncOption struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	SSH      bool   `json:"useSSH"`
-
-	Repo            string  `json:"repo"`
-	Branch          string  `json:"branch"`
-	Rev             string  `json:"rev"`
-	Depth           int     `json:"depth"`
-	Root            string  `json:"root"`
-	Dest            string  `json:"dest"`
-	Wait            float64 `json:"wait"`
-	OneTime         bool    `json:"oneTime"`
-	MaxSyncFailures int     `json:"maxSyncFailures"`
-	Chmod           int     `json:"chmod"`
-}
-
 var (
 	log = newLoggerOrDie()
 

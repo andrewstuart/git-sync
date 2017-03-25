@@ -96,7 +96,7 @@ func main() {
 	initialSync := true
 	failCount := 0
 	for {
-		if err := syncRepo(cliOpts.Repo, cliOpts.Branch, cliOpts.Rev, cliOpts.Depth, cliOpts.Root, cliOpts.Dest); err != nil {
+		if err := cliOpts.sync(); err != nil {
 			if initialSync || failCount >= cliOpts.MaxSyncFailures {
 				log.Errorf("error syncing repo: %v", err)
 				os.Exit(1)
@@ -109,7 +109,7 @@ func main() {
 			continue
 		}
 		if initialSync {
-			if isHash, err := revIsHash(cliOpts.Rev, cliOpts.Root); err != nil {
+			if isHash, err := cliOpts.revIsHash(cliOpts.Rev); err != nil {
 				log.Errorf("can't tell if rev %s is a git hash, exiting", cliOpts.Rev)
 				os.Exit(1)
 			} else if isHash {
@@ -186,27 +186,27 @@ func updateSymlink(gitRoot, link, newDir string) error {
 }
 
 // addWorktreeAndSwap creates a new worktree and calls updateSymlink to swap the symlink to point to the new worktree
-func addWorktreeAndSwap(gitRoot, dest, branch, rev, hash string) error {
-	log.V(0).Infof("syncing to %s (%s)", rev, hash)
+func (o *SyncOption) addWorktreeAndSwap(hash string) error {
+	log.V(0).Infof("syncing to %s (%s)", o.Rev, hash)
 
 	// Update from the remote.
-	if _, err := runCommand(gitRoot, "git", "fetch", "--tags", "origin", branch); err != nil {
+	if _, err := runCommand(o.Root, "git", "fetch", "--tags", "origin", o.Branch); err != nil {
 		return err
 	}
 
 	// Make a worktree for this exact git hash.
-	worktreePath := path.Join(gitRoot, "rev-"+hash)
-	_, err := runCommand(gitRoot, "git", "worktree", "add", worktreePath, "origin/"+branch)
+	worktreePath := path.Join(o.Root, "rev-"+hash)
+	_, err := runCommand(o.Root, "git", "worktree", "add", worktreePath, "origin/"+o.Branch)
 	if err != nil {
 		return err
 	}
-	log.V(0).Infof("added worktree %s for origin/%s", worktreePath, branch)
+	log.V(0).Infof("added worktree %s for origin/%s", worktreePath, o.Branch)
 
 	// The .git file in the worktree directory holds a reference to
 	// /git/.git/worktrees/<worktree-dir-name>. Replace it with a reference
 	// using relative paths, so that other containers can use a different volume
 	// mount name.
-	worktreePathRelative, err := filepath.Rel(gitRoot, worktreePath)
+	worktreePathRelative, err := filepath.Rel(o.Root, worktreePath)
 	if err != nil {
 		return err
 	}
@@ -222,112 +222,15 @@ func addWorktreeAndSwap(gitRoot, dest, branch, rev, hash string) error {
 	}
 	log.V(0).Infof("reset worktree %s to %s", worktreePath, hash)
 
-	if cliOpts.Chmod != 0 {
+	if o.Chmod != 0 {
 		// set file permissions
-		_, err = runCommand("", "chmod", "-R", strconv.Itoa(cliOpts.Chmod), worktreePath)
+		_, err = runCommand("", "chmod", "-R", strconv.Itoa(o.Chmod), worktreePath)
 		if err != nil {
 			return err
 		}
 	}
 
-	return updateSymlink(gitRoot, dest, worktreePath)
-}
-
-func cloneRepo(repo, branch, rev string, depth int, gitRoot string) error {
-	args := []string{"clone", "--no-checkout", "-b", branch}
-	if depth != 0 {
-		args = append(args, "--depth", strconv.Itoa(depth))
-	}
-	args = append(args, repo, gitRoot)
-	_, err := runCommand("", "git", args...)
-	if err != nil {
-		return err
-	}
-	log.V(0).Infof("cloned %s", repo)
-
-	return nil
-}
-
-func hashForRev(rev, gitRoot string) (string, error) {
-	output, err := runCommand(gitRoot, "git", "rev-list", "-n1", rev)
-	if err != nil {
-		return "", err
-	}
-	return strings.Trim(string(output), "\n"), nil
-}
-
-func revIsHash(rev, gitRoot string) (bool, error) {
-	// If a rev is a tag name or HEAD, rev-list will produce the git hash.  If
-	// it is already a git hash, the output will be the same hash.  Of course, a
-	// user could specify "abc" and match "abcdef12345678", so we just do a
-	// prefix match.
-	output, err := hashForRev(rev, gitRoot)
-	if err != nil {
-		return false, err
-	}
-	return strings.HasPrefix(output, rev), nil
-}
-
-// syncRepo syncs the branch of a given repository to the destination at the given rev.
-func syncRepo(repo, branch, rev string, depth int, gitRoot, dest string) error {
-	target := path.Join(gitRoot, dest)
-	gitRepoPath := path.Join(target, ".git")
-	hash := rev
-	_, err := os.Stat(gitRepoPath)
-	switch {
-	case os.IsNotExist(err):
-		err = cloneRepo(repo, branch, rev, depth, gitRoot)
-		if err != nil {
-			return err
-		}
-		hash, err = hashForRev(rev, gitRoot)
-		if err != nil {
-			return err
-		}
-	case err != nil:
-		return fmt.Errorf("error checking if repo exists %q: %v", gitRepoPath, err)
-	default:
-		local, remote, err := getRevs(target, branch, rev)
-		if err != nil {
-			return err
-		}
-		log.V(2).Infof("local hash:  %s", local)
-		log.V(2).Infof("remote hash: %s", remote)
-		if local != remote {
-			log.V(0).Infof("update required")
-			hash = remote
-		} else {
-			log.V(1).Infof("no update required")
-			return nil
-		}
-	}
-
-	return addWorktreeAndSwap(gitRoot, dest, branch, rev, hash)
-}
-
-// getRevs returns the local and upstream hashes for rev.
-func getRevs(localDir, branch, rev string) (string, string, error) {
-	// Ask git what the exact hash is for rev.
-	local, err := hashForRev(rev, localDir)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Build a ref string, depending on whether the user asked to track HEAD or a tag.
-	ref := ""
-	if rev == "HEAD" {
-		ref = "refs/heads/" + branch
-	} else {
-		ref = "refs/tags/" + rev + "^{}"
-	}
-
-	// Figure out what hash the remote resolves ref to.
-	remote, err := remoteHashForRef(ref, localDir)
-	if err != nil {
-		return "", "", err
-	}
-
-	return local, remote, nil
+	return updateSymlink(o.Root, o.Dest, worktreePath)
 }
 
 func remoteHashForRef(ref, gitRoot string) (string, error) {
