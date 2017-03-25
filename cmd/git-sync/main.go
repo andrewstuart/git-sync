@@ -20,7 +20,6 @@ package main // import "k8s.io/git-sync/cmd/git-sync"
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -36,38 +35,6 @@ import (
 	"github.com/thockin/glogr"
 	"github.com/thockin/logr"
 )
-
-var flRepo = flag.String("repo", envString("GIT_SYNC_REPO", ""),
-	"the git repository to clone")
-var flBranch = flag.String("branch", envString("GIT_SYNC_BRANCH", "master"),
-	"the git branch to check out")
-var flRev = flag.String("rev", envString("GIT_SYNC_REV", "HEAD"),
-	"the git revision (tag or hash) to check out")
-var flDepth = flag.Int("depth", envInt("GIT_SYNC_DEPTH", 0),
-	"use a shallow clone with a history truncated to the specified number of commits")
-
-var flRoot = flag.String("root", envString("GIT_SYNC_ROOT", "/git"),
-	"the root directory for git operations")
-var flDest = flag.String("dest", envString("GIT_SYNC_DEST", ""),
-	"the name at which to publish the checked-out files under --root (defaults to leaf dir of --root)")
-var flWait = flag.Float64("wait", envFloat("GIT_SYNC_WAIT", 0),
-	"the number of seconds between syncs")
-var flOneTime = flag.Bool("one-time", envBool("GIT_SYNC_ONE_TIME", false),
-	"exit after the initial checkout")
-var flMaxSyncFailures = flag.Int("max-sync-failures", envInt("GIT_SYNC_MAX_SYNC_FAILURES", 0),
-	"the number of consecutive failures allowed before aborting (the first pull must succeed)")
-var flChmod = flag.Int("change-permissions", envInt("GIT_SYNC_PERMISSIONS", 0),
-	"the file permissions to apply to the checked-out files")
-
-var flUsername = flag.String("username", envString("GIT_SYNC_USERNAME", ""),
-	"the username to use")
-var flPassword = flag.String("password", envString("GIT_SYNC_PASSWORD", ""),
-	"the password to use")
-
-var flSSH = flag.Bool("ssh", envBool("GIT_SYNC_SSH", false),
-	"use SSH for git operations")
-
-var log = newLoggerOrDie()
 
 func newLoggerOrDie() logr.Logger {
 	g, err := glogr.New()
@@ -122,41 +89,6 @@ func envFloat(key string, def float64) float64 {
 }
 
 func main() {
-	setFlagDefaults()
-
-	flag.Parse()
-	if *flRepo == "" {
-		fmt.Fprintf(os.Stderr, "ERROR: --repo or $GIT_SYNC_REPO must be provided\n")
-		flag.Usage()
-		os.Exit(1)
-	}
-	if *flDest == "" {
-		parts := strings.Split(strings.Trim(*flRepo, "/"), "/")
-		*flDest = parts[len(parts)-1]
-	}
-	if strings.Contains(*flDest, "/") {
-		fmt.Fprintf(os.Stderr, "ERROR: --dest must be a bare name\n")
-		flag.Usage()
-		os.Exit(1)
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: git executable not found: %v\n", err)
-		os.Exit(1)
-	}
-
-	if *flUsername != "" && *flPassword != "" {
-		if err := setupGitAuth(*flUsername, *flPassword, *flRepo); err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: can't create .netrc file: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	if *flSSH {
-		if err := setupGitSSH(); err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: can't configure SSH: %v\n", err)
-			os.Exit(1)
-		}
-	}
 
 	// From here on, output goes through logging.
 	log.V(0).Infof("starting up: %q", os.Args)
@@ -164,50 +96,40 @@ func main() {
 	initialSync := true
 	failCount := 0
 	for {
-		if err := syncRepo(*flRepo, *flBranch, *flRev, *flDepth, *flRoot, *flDest); err != nil {
-			if initialSync || failCount >= *flMaxSyncFailures {
+		if err := syncRepo(cliOpts.Repo, cliOpts.Branch, cliOpts.Rev, cliOpts.Depth, cliOpts.Root, cliOpts.Dest); err != nil {
+			if initialSync || failCount >= cliOpts.MaxSyncFailures {
 				log.Errorf("error syncing repo: %v", err)
 				os.Exit(1)
 			}
 
 			failCount++
 			log.Errorf("unexpected error syncing repo: %v", err)
-			log.V(0).Infof("waiting %v before retrying", waitTime(*flWait))
-			time.Sleep(waitTime(*flWait))
+			log.V(0).Infof("waiting %v before retrying", waitTime(cliOpts.Wait))
+			time.Sleep(waitTime(cliOpts.Wait))
 			continue
 		}
 		if initialSync {
-			if isHash, err := revIsHash(*flRev, *flRoot); err != nil {
-				log.Errorf("can't tell if rev %s is a git hash, exiting", *flRev)
+			if isHash, err := revIsHash(cliOpts.Rev, cliOpts.Root); err != nil {
+				log.Errorf("can't tell if rev %s is a git hash, exiting", cliOpts.Rev)
 				os.Exit(1)
 			} else if isHash {
-				log.V(0).Infof("rev %s appears to be a git hash, no further sync needed", *flRev)
+				log.V(0).Infof("rev %s appears to be a git hash, no further sync needed", cliOpts.Rev)
 				sleepForever()
 			}
-			if *flOneTime {
+			if cliOpts.OneTime {
 				os.Exit(0)
 			}
 			initialSync = false
 		}
 
 		failCount = 0
-		log.V(1).Infof("next sync in %v", waitTime(*flWait))
-		time.Sleep(waitTime(*flWait))
+		log.V(1).Infof("next sync in %v", waitTime(cliOpts.Wait))
+		time.Sleep(waitTime(cliOpts.Wait))
 	}
 }
 
 func waitTime(seconds float64) time.Duration {
 	return time.Duration(int(seconds*1000)) * time.Millisecond
-}
-
-func setFlagDefaults() {
-	// Force logging to stderr.
-	stderrFlag := flag.Lookup("logtostderr")
-	if stderrFlag == nil {
-		fmt.Fprintf(os.Stderr, "can't find flag 'logtostderr'\n")
-		os.Exit(1)
-	}
-	stderrFlag.Value.Set("true")
 }
 
 // Do no work, but don't do something that triggers go's runtime into thinking
@@ -300,9 +222,9 @@ func addWorktreeAndSwap(gitRoot, dest, branch, rev, hash string) error {
 	}
 	log.V(0).Infof("reset worktree %s to %s", worktreePath, hash)
 
-	if *flChmod != 0 {
+	if cliOpts.Chmod != 0 {
 		// set file permissions
-		_, err = runCommand("", "chmod", "-R", strconv.Itoa(*flChmod), worktreePath)
+		_, err = runCommand("", "chmod", "-R", strconv.Itoa(cliOpts.Chmod), worktreePath)
 		if err != nil {
 			return err
 		}
