@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -121,4 +123,52 @@ func (o *SyncOption) getRevs(rev string) (string, string, error) {
 	}
 
 	return local, remote, nil
+}
+
+// addWorktreeAndSwap creates a new worktree and calls updateSymlink to swap the symlink to point to the new worktree
+func (o *SyncOption) addWorktreeAndSwap(hash string) error {
+	log.V(0).Infof("syncing to %s (%s)", o.Rev, hash)
+
+	// Update from the remote.
+	if _, err := runCommand(o.Root, "git", "fetch", "--tags", "origin", o.Branch); err != nil {
+		return err
+	}
+
+	// Make a worktree for this exact git hash.
+	worktreePath := path.Join(o.Root, "rev-"+hash)
+	_, err := runCommand(o.Root, "git", "worktree", "add", worktreePath, "origin/"+o.Branch)
+	if err != nil {
+		return err
+	}
+	log.V(0).Infof("added worktree %s for origin/%s", worktreePath, o.Branch)
+
+	// The .git file in the worktree directory holds a reference to
+	// /git/.git/worktrees/<worktree-dir-name>. Replace it with a reference
+	// using relative paths, so that other containers can use a different volume
+	// mount name.
+	worktreePathRelative, err := filepath.Rel(o.Root, worktreePath)
+	if err != nil {
+		return err
+	}
+	gitDirRef := []byte(path.Join("gitdir: ../.git/worktrees", worktreePathRelative) + "\n")
+	if err = ioutil.WriteFile(path.Join(worktreePath, ".git"), gitDirRef, 0644); err != nil {
+		return err
+	}
+
+	// Reset the worktree's working copy to the specific rev.
+	_, err = runCommand(worktreePath, "git", "reset", "--hard", hash)
+	if err != nil {
+		return err
+	}
+	log.V(0).Infof("reset worktree %s to %s", worktreePath, hash)
+
+	if o.Chmod != 0 {
+		// set file permissions
+		_, err = runCommand("", "chmod", "-R", strconv.Itoa(o.Chmod), worktreePath)
+		if err != nil {
+			return err
+		}
+	}
+
+	return updateSymlink(o.Root, o.Dest, worktreePath)
 }
